@@ -1,73 +1,142 @@
+
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
-  <base target="_top">
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Majorelle · Scanner téléphone</title>
-  <style>
-    *{box-sizing:border-box}body{margin:0;background:#f1f5f9;color:#0f172a;font:15px Arial,sans-serif}
-    .wrap{max-width:620px;margin:20px auto;padding:18px}.card{background:#fff;border:1px solid #e2e8f0;border-radius:20px;padding:18px;box-shadow:0 8px 30px #0f172a12}
-    h1{font-size:21px;margin:0 0 5px}.muted{color:#64748b;font-size:13px;line-height:1.5}
-    .view{position:relative;background:#0f172a;border-radius:16px;overflow:hidden;margin:16px 0;min-height:280px;display:grid;place-items:center}
-    video{width:100%;max-height:65vh;object-fit:cover;display:block}.frame{position:absolute;inset:15%;border:2px solid #38bdf8;border-radius:14px;pointer-events:none}
-    .status{padding:11px;background:#eff6ff;color:#1e40af;border-radius:11px;font-size:13px;line-height:1.5}
-    button{border:0;border-radius:11px;padding:13px 17px;background:#0c1b3a;color:#fff;font-weight:700;font-size:14px;width:100%;margin-top:10px}
-    button.secondary{background:#e2e8f0;color:#1e293b}
-    input{width:100%;padding:13px;border:1px solid #cbd5e1;border-radius:10px;font-size:16px;margin-top:12px}
-    @media(max-width:520px){.wrap{margin:0;padding:10px}.card{padding:14px;border-radius:14px}}
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0c1b3a">
+<title>Majorelle · Phone Scanner</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#eef2f7;color:#111827;font:16px system-ui,-apple-system,Segoe UI,Arial,sans-serif}
+.wrap{max-width:650px;margin:18px auto;padding:12px}
+.card{background:#fff;border:1px solid #dbe2ea;border-radius:22px;padding:20px;box-shadow:0 8px 28px #0f172a10}
+h1{font-size:24px;margin:0 0 8px}
+.muted{color:#64748b;line-height:1.55}
+.view{position:relative;background:#0c1b3a;border-radius:20px;overflow:hidden;margin:18px 0;min-height:300px;display:grid;place-items:center}
+video{display:block;width:100%;max-height:62vh;object-fit:cover}
+.frame{position:absolute;left:12%;right:12%;top:28%;bottom:28%;border:3px solid #38bdf8;border-radius:18px;pointer-events:none}
+.status{background:#eff6ff;color:#1e40af;padding:14px;border-radius:14px;line-height:1.5}
+button{width:100%;border:0;border-radius:14px;padding:16px;margin-top:12px;background:#0c1b3a;color:white;font-size:16px;font-weight:700}
+button.secondary{background:#e2e8f0;color:#1e293b}
+input{width:100%;padding:15px;border:1px solid #cbd5e1;border-radius:12px;font-size:18px;margin-top:12px}
+@media(max-width:520px){.wrap{margin:0;padding:10px}.card{padding:16px;border-radius:16px}}
+</style>
 </head>
 <body>
-<div class="wrap"><div class="card">
-  <h1>Majorelle · Scanner téléphone</h1>
-  <div class="muted">Pointez la caméra vers le code-barres du produit. Le résultat sera envoyé à votre PC.</div>
-  <div class="view"><video id="video" autoplay muted playsinline></video><div class="frame"></div></div>
-  <div id="status" class="status">Initialisation de la caméra…</div>
-  <button id="retry">Activer / Réessayer la caméra</button>
-  <button id="close" class="secondary">Fermer</button>
-  <div class="muted" style="margin-top:14px">Si la lecture automatique n’est pas disponible, vous pouvez saisir le code manuellement :</div>
-  <input id="manual" inputmode="numeric" autocomplete="off" placeholder="Code-barres">
-  <button id="sendManual">Envoyer le code au PC</button>
-</div></div>
+<div class="wrap"><main class="card">
+<h1>Majorelle · Phone Scanner</h1>
+<div class="muted">Point your phone camera at the product barcode. The result will be sent to your PC.</div>
+<div class="view"><video id="video" autoplay muted playsinline></video><div class="frame"></div></div>
+<div id="status" class="status">Preparing scanner…</div>
+<button id="start">Start / Retry camera</button>
+<button id="stop" class="secondary">Stop camera</button>
+<div class="muted" style="margin-top:18px">If automatic scanning is unavailable, enter the barcode manually:</div>
+<input id="manual" inputmode="numeric" autocomplete="off" placeholder="Barcode">
+<button id="send">Send barcode to PC</button>
+</main></div>
 <script>
-(function(){
-  const token='<?= phoneToken ?>';
-  const video=document.getElementById('video'),status=document.getElementById('status');
-  let stream=null,detector=null,frame=0,busy=false,sent=false;
-  function stop(){if(frame)cancelAnimationFrame(frame);frame=0;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}try{video.pause();video.srcObject=null}catch(e){}}
-  function send(code){
-    code=String(code||'').trim();if(!code||sent)return;
-    sent=true;stop();status.textContent='Envoi du code vers votre PC…';
-    google.script.run.withSuccessHandler(()=>{status.textContent='Code envoyé avec succès. Vous pouvez fermer cette page.';})
-      .withFailureHandler(err=>{sent=false;status.textContent=(err&&err.message)||'Erreur lors de l’envoi. Réessayez.';})
-      .submitPhoneScan(token,code);
+(()=>{
+'use strict';
+const params=new URLSearchParams(location.search);
+const endpoint=params.get('endpoint')||'';
+const token=params.get('token')||'';
+const video=document.getElementById('video');
+const status=document.getElementById('status');
+let stream=null,detector=null,raf=0,detectorBusy=false,sending=false;
+let lastCode='',lastSeenAt=0;
+const validEndpoint=/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(endpoint);
+const validToken=/^[a-f0-9]{64}$/i.test(token);
+function message(s){status.textContent=s}
+function stop(){
+ if(raf)cancelAnimationFrame(raf);raf=0;
+ if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}
+ try{video.pause();video.srcObject=null}catch(e){}
+}
+function jsonp(action,extra={}){
+ return new Promise((resolve,reject)=>{
+  const cb='mjcb_'+Date.now()+'_'+Math.floor(Math.random()*1e6);
+  const script=document.createElement('script');
+  const q=new URLSearchParams({phoneApi:action,token,callback:cb,...extra});
+  const timer=setTimeout(()=>finish(new Error('Request timed out')),12000);
+  function finish(err,data){clearTimeout(timer);try{delete window[cb]}catch(e){window[cb]=undefined}script.remove();err?reject(err):resolve(data)}
+  window[cb]=data=>finish(null,data);
+  script.onerror=()=>finish(new Error('Could not contact Majorelle server'));
+  script.src=endpoint+'?'+q.toString();
+  document.head.appendChild(script);
+ });
+}
+async function send(code){
+ code=String(code||'').trim();
+ if(!code||sending)return false;
+ if(!validEndpoint||!validToken){message('Invalid pairing link. Generate a new QR code from your PC.');return false}
+ sending=true;message('Sending '+code+' to your PC…');
+ try{
+  const result=await jsonp('submit',{code});
+  if(result.error)throw new Error(result.error);
+  lastCode=code;lastSeenAt=Date.now();
+  message('Barcode '+code+' sent. Keep scanning the next product — camera stays active.');
+  try{if(navigator.vibrate)navigator.vibrate(70)}catch(e){}
+  return true;
+ }catch(e){
+  lastCode='';message((e&&e.message)||'Could not send barcode. Try again.');
+  return false;
+ }finally{sending=false}
+}
+async function start(){
+ stop();sending=false;lastCode='';lastSeenAt=0;
+ if(!validEndpoint||!validToken){message('Invalid pairing link. Start Phone Scan again from Majorelle on your PC.');return}
+ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){message('Camera API unavailable. Open this HTTPS page in Chrome or Safari.');return}
+ try{
+  message('Requesting camera access…');
+  stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280}}});
+  video.srcObject=stream;await video.play();
+  if(!('BarcodeDetector' in window)){message('Camera is active, but automatic barcode reading is not supported by this browser. Enter the barcode manually below.');return}
+  const supported=await BarcodeDetector.getSupportedFormats();
+  const formats=['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf','qr_code'].filter(x=>supported.includes(x));
+  if(!formats.length){message('Camera is active, but this browser does not support the required barcode formats. Enter the barcode manually.');return}
+  detector=new BarcodeDetector({formats});
+  message('Camera active. Scan one product after another — no need to reopen the QR code.');
+  async function scan(){
+   if(!stream)return;
+   if(!detectorBusy&&video.readyState>=2){
+    detectorBusy=true;
+    let hits=[];
+    try{hits=await detector.detect(video)}catch(e){}
+    detectorBusy=false;
+    if(hits&&hits.length&&hits[0].rawValue){
+     const code=String(hits[0].rawValue).trim();
+     const now=Date.now();
+     if(code!==lastCode || now-lastSeenAt>900){
+      if(!sending && code!==lastCode)send(code);
+      else if(!sending && code===lastCode && now-lastSeenAt>900)send(code);
+     }
+     lastSeenAt=now;
+    }else if(lastCode && Date.now()-lastSeenAt>1100){
+     lastCode='';
+    }
+   }
+   if(stream)raf=requestAnimationFrame(scan);
   }
-  async function start(){
-    stop();sent=false;
-    if(!/^[a-f0-9]{64}$/i.test(token)){status.textContent='Lien de connexion invalide. Recommencez depuis le PC.';return}
-    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){status.textContent='Caméra indisponible. Ouvrez ce lien dans Chrome ou Safari et vérifiez HTTPS.';return}
-    try{
-      stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280}},audio:false});
-      video.srcObject=stream;await video.play();status.textContent='Caméra active. Recherche du code-barres…';
-      if(!('BarcodeDetector' in window)){status.textContent='Caméra active, mais lecture automatique non prise en charge. Saisissez le code manuellement ci-dessous.';return}
-      const supported=await BarcodeDetector.getSupportedFormats();
-      const formats=['ean_13','ean_8','upc_a','upc_e','code_128','code_39','qr_code'].filter(x=>supported.includes(x));
-      if(!formats.length){status.textContent='Formats de codes non pris en charge. Saisissez le code manuellement.';return}
-      detector=new BarcodeDetector({formats});
-      async function tick(){
-        if(!stream||sent)return;
-        if(!busy&&video.readyState>=2){busy=true;try{const found=await detector.detect(video);if(found&&found[0]&&found[0].rawValue){send(found[0].rawValue);return}}catch(e){}finally{busy=false}}
-        if(stream&&!sent)frame=requestAnimationFrame(tick);
-      }
-      frame=requestAnimationFrame(tick);
-    }catch(err){status.textContent=(err&&err.name==='NotAllowedError'?'Autorisez l’accès à la caméra dans les paramètres du navigateur.':'Impossible d’activer la caméra : '+(err&&err.message||'erreur inconnue'))}
-  }
-  document.getElementById('retry').addEventListener('click',start);
-  document.getElementById('close').addEventListener('click',()=>{stop();status.textContent='Scanner arrêté. Vous pouvez fermer cette page.'});
-  document.getElementById('sendManual').addEventListener('click',()=>send(document.getElementById('manual').value));
-  document.getElementById('manual').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();send(e.target.value)}});
-  start();
+  raf=requestAnimationFrame(scan);
+ }catch(e){
+  const name=e&&e.name||'';
+  if(name==='NotAllowedError'||name==='PermissionDeniedError')message('Camera permission was denied by the browser or hosting page. Check the site permission and reload this page.');
+  else if(name==='NotFoundError')message('No camera was found on this device.');
+  else message('Could not start camera: '+((e&&e.message)||name||'unknown error'));
+ }
+}
+document.getElementById('start').addEventListener('click',start);
+document.getElementById('stop').addEventListener('click',()=>{stop();message('Camera stopped.')});
+document.getElementById('send').addEventListener('click',async()=>{
+ const field=document.getElementById('manual');
+ if(await send(field.value))field.value='';
+});
+document.getElementById('manual').addEventListener('keydown',async e=>{
+ if(e.key==='Enter'){e.preventDefault();if(await send(e.target.value))e.target.value=''}
+});
+if(validEndpoint&&validToken)start();else message('Invalid pairing link. Start Phone Scan again from Majorelle on your PC.');
 })();
 </script>
-</body></html>
+</body>
+</html>
