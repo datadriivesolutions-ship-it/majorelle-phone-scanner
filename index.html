@@ -35,6 +35,7 @@ input{width:100%;padding:15px;border:1px solid #cbd5e1;border-radius:12px;font-s
 <input id="manual" inputmode="numeric" autocomplete="off" placeholder="Barcode">
 <button id="send">Send barcode to PC</button>
 </main></div>
+<script src="https://unpkg.com/@zxing/browser@0.2.1/umd/index.min.js"></script>
 <script>
 (()=>{
 'use strict';
@@ -43,7 +44,7 @@ const endpoint=params.get('endpoint')||'';
 const token=params.get('token')||'';
 const video=document.getElementById('video');
 const status=document.getElementById('status');
-let stream=null,detector=null,raf=0,detectorBusy=false,sending=false;
+let stream=null,detector=null,raf=0,detectorBusy=false,sending=false,zxingControls=null;
 let candidateCode='',candidateFormat='',candidateFrames=0,lastSentCode='';
 let receiptTimer=null,receiptBusy=false;
 const validEndpoint=/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(endpoint);
@@ -52,10 +53,9 @@ const validToken=/^[a-f0-9]{64}$/i.test(token);
 function message(s){status.textContent=s}
 
 function stop(){
- if(raf)cancelAnimationFrame(raf);
- raf=0;
- if(receiptTimer)clearTimeout(receiptTimer);
- receiptTimer=null;
+ if(raf)cancelAnimationFrame(raf);raf=0;
+ if(zxingControls){try{zxingControls.stop()}catch(e){}zxingControls=null;}
+ if(receiptTimer)clearTimeout(receiptTimer);receiptTimer=null;
  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}
  try{video.pause();video.srcObject=null}catch(e){}
 }
@@ -83,42 +83,36 @@ function validGtin(code,format){
  if(format==='ean_13'){
   if(!/^\d{13}$/.test(code))return false;
   const d=code.split('').map(Number);
-  let sum=0;
-  for(let i=0;i<12;i++)sum+=d[i]*(i%2?3:1);
+  let sum=0;for(let i=0;i<12;i++)sum+=d[i]*(i%2?3:1);
   return (10-sum%10)%10===d[12];
  }
  if(format==='ean_8'){
   if(!/^\d{8}$/.test(code))return false;
   const d=code.split('').map(Number);
-  let sum=0;
-  for(let i=0;i<7;i++)sum+=d[i]*(i%2?1:3);
+  let sum=0;for(let i=0;i<7;i++)sum+=d[i]*(i%2?1:3);
   return (10-sum%10)%10===d[7];
  }
  if(format==='upc_a'){
   if(!/^\d{12}$/.test(code))return false;
   const d=code.split('').map(Number);
-  let sum=0;
-  for(let i=0;i<11;i++)sum+=d[i]*(i%2?1:3);
+  let sum=0;for(let i=0;i<11;i++)sum+=d[i]*(i%2?1:3);
   return (10-sum%10)%10===d[11];
  }
  return true;
 }
 
 function candidateFrom(hits){
- const vw=video.videoWidth||1;
- const vh=video.videoHeight||1;
+ const vw=video.videoWidth||1,vh=video.videoHeight||1;
  const list=(hits||[]).filter(hit=>{
-  const code=String(hit.rawValue||'').trim();
-  const fmt=String(hit.format||'');
+  const code=String(hit.rawValue||'').trim(),fmt=String(hit.format||'');
   if(!code)return false;
   if(['ean_13','ean_8','upc_a'].includes(fmt)&&!validGtin(code,fmt))return false;
   if(!['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf'].includes(fmt))return false;
   const box=hit.boundingBox;
   if(box){
-   const cx=(box.x+box.width/2)/vw;
-   const cy=(box.y+box.height/2)/vh;
+   const cx=(box.x+box.width/2)/vw,cy=(box.y+box.height/2)/vh;
    if(cx<0.06||cx>0.94||cy<0.08||cy>0.92)return false;
-   if(box.width<box.height*1.15)return false;
+   if(['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf'].includes(fmt)&&box.width<box.height*1.15)return false;
   }
   return true;
  });
@@ -126,39 +120,83 @@ function candidateFrom(hits){
   const rank=f=>f.format==='ean_13'?0:f.format==='ean_8'?1:f.format==='upc_a'?2:f.format==='upc_e'?3:4;
   return rank(a)-rank(b);
  });
- return list.length?{
-  code:String(list[0].rawValue).trim(),
-  format:String(list[0].format||'')
- }:null;
+ return list.length?{code:String(list[0].rawValue).trim(),format:String(list[0].format||'')}:null;
+}
+
+function acceptCandidate(code,format){
+ code=String(code||'').trim();
+ format=String(format||'').toLowerCase();
+ if(!code)return;
+ if(['ean_13','ean_8','upc_a'].includes(format)&&!validGtin(code,format)){
+  candidateCode='';candidateFormat='';candidateFrames=0;return;
+ }
+ if(!['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf'].includes(format))return;
+ if(code===candidateCode&&format===candidateFormat)candidateFrames++;
+ else{candidateCode=code;candidateFormat=format;candidateFrames=1}
+ const required=['ean_13','ean_8','upc_a'].includes(format)?3:4;
+ if(candidateFrames>=required&&code!==lastSentCode&&!sending)send(code);
+}
+
+function zxingFormatName(result){
+ try{
+  const raw=result.getBarcodeFormat();
+  const formats=window.ZXingBrowser&&window.ZXingBrowser.BarcodeFormat;
+  return formats&&formats[raw]?String(formats[raw]).toLowerCase():'';
+ }catch(e){return ''}
+}
+
+async function startZXingFallback(){
+ if(!window.ZXingBrowser||!window.ZXingBrowser.BrowserMultiFormatReader){
+  message('Camera is active, but the Safari barcode engine could not load. Check your Internet connection and reload this page.');
+  return;
+ }
+ try{
+  const hints=new Map();
+  const Z=window.ZXingBrowser;
+  if(Z.DecodeHintType&&Z.BarcodeFormat){
+   hints.set(Z.DecodeHintType.POSSIBLE_FORMATS,[
+    Z.BarcodeFormat.EAN_13,Z.BarcodeFormat.EAN_8,Z.BarcodeFormat.UPC_A,
+    Z.BarcodeFormat.UPC_E,Z.BarcodeFormat.CODE_128,Z.BarcodeFormat.CODE_39,
+    Z.BarcodeFormat.ITF
+   ].filter(x=>x!==undefined));
+   if(Z.DecodeHintType.TRY_HARDER)hints.set(Z.DecodeHintType.TRY_HARDER,true);
+  }
+  const reader=new Z.BrowserMultiFormatReader(hints);
+  message('Safari mode: loading barcode reader…');
+  zxingControls=await reader.decodeFromVideoElement(video,(result,error)=>{
+   if(result){
+    const code=result.getText();
+    const format=zxingFormatName(result);
+    if(format)acceptCandidate(code,format);
+    else if(/^\d{13}$/.test(code)&&validGtin(code,'ean_13'))acceptCandidate(code,'ean_13');
+    else if(/^\d{8}$/.test(code)&&validGtin(code,'ean_8'))acceptCandidate(code,'ean_8');
+    else if(/^\d{12}$/.test(code)&&validGtin(code,'upc_a'))acceptCandidate(code,'upc_a');
+   }
+  });
+  message('Camera active. Safari barcode reader ready. Center the barcode inside the blue frame.');
+ }catch(e){
+  message('Camera is active, but Safari barcode reader could not start: '+((e&&e.message)||'unknown error'));
+ }
 }
 
 async function send(code){
  code=String(code||'').trim();
  if(!code||sending||code===lastSentCode)return false;
- if(!validEndpoint||!validToken){
-  message('Invalid pairing link. Start Phone Scan again from Majorelle on your PC.');
-  return false;
- }
- sending=true;
- message('Barcode '+code+' sent. Waiting for PC verification…');
+ if(!validEndpoint||!validToken){message('Invalid pairing link. Start Phone Scan again from Majorelle on your PC.');return false}
+ sending=true;message('Barcode '+code+' sent. Waiting for PC verification…');
  try{
   const result=await jsonp('submit',{code});
   if(result.error)throw new Error(result.error);
   lastSentCode=code;
-  candidateCode='';
-  candidateFormat='';
-  candidateFrames=0;
+  candidateCode='';candidateFormat='';candidateFrames=0;
   message('Barcode '+code+' sent. Waiting for Majorelle to confirm the product…');
   try{if(navigator.vibrate)navigator.vibrate(70)}catch(e){}
   return true;
  }catch(e){
-  candidateCode='';
-  candidateFrames=0;
+  candidateCode='';candidateFrames=0;
   message((e&&e.message)||'Could not send barcode. Try again.');
   return false;
- }finally{
-  sending=false;
- }
+ }finally{sending=false}
 }
 
 async function pollReceipts(){
@@ -177,57 +215,31 @@ async function pollReceipts(){
    }
   }
  }catch(e){}
- finally{
-  receiptBusy=false;
-  if(stream)receiptTimer=setTimeout(pollReceipts,900);
- }
+ finally{receiptBusy=false;if(stream)receiptTimer=setTimeout(pollReceipts,900)}
 }
 
 async function start(){
- stop();
- sending=false;
- candidateCode='';
- candidateFormat='';
- candidateFrames=0;
- lastSentCode='';
-
- if(!validEndpoint||!validToken){
-  message('Invalid pairing link. Start Phone Scan again from Majorelle on your PC.');
-  return;
- }
- if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
-  message('Camera API unavailable. Open this HTTPS page in Chrome or Safari.');
-  return;
- }
+ stop();sending=false;candidateCode='';candidateFormat='';candidateFrames=0;lastSentCode='';
+ if(!validEndpoint||!validToken){message('Invalid pairing link. Start Phone Scan again from Majorelle on your PC.');return}
+ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){message('Camera API unavailable. Open this HTTPS page in Chrome or Safari.');return}
  try{
   message('Requesting camera access…');
-  stream=await navigator.mediaDevices.getUserMedia({
-   audio:false,
-   video:{
-    facingMode:{ideal:'environment'},
-    width:{ideal:1920},
-    height:{ideal:1080}
-   }
-  });
-  video.srcObject=stream;
-  await video.play();
-
+  stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}}});
+  video.srcObject=stream;await video.play();
+  pollReceipts();
   if(!('BarcodeDetector' in window)){
-   message('Camera is active, but automatic barcode reading is not supported by this browser. Enter the barcode manually below.');
+   await startZXingFallback();
    return;
   }
-
-  const supported=await BarcodeDetector.getSupportedFormats();
+  let supported=[];
+  try{supported=await BarcodeDetector.getSupportedFormats()}catch(e){}
   const formats=['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf'].filter(x=>supported.includes(x));
   if(!formats.length){
-   message('Camera is active, but this browser does not support the required product barcode formats. Enter the barcode manually.');
+   await startZXingFallback();
    return;
   }
-
   detector=new BarcodeDetector({formats});
   message('Camera active. Center the barcode inside the blue frame. Scan one product at a time.');
-  pollReceipts();
-
   async function scan(){
    if(!stream)return;
    if(!detectorBusy&&video.readyState>=2){
@@ -235,55 +247,29 @@ async function start(){
     let hits=[];
     try{hits=await detector.detect(video)}catch(e){}
     detectorBusy=false;
-
     const found=candidateFrom(hits);
-    if(found){
-     if(found.code===candidateCode&&found.format===candidateFormat){
-      candidateFrames++;
-     }else{
-      candidateCode=found.code;
-      candidateFormat=found.format;
-      candidateFrames=1;
-     }
-     const required=['ean_13','ean_8','upc_a'].includes(found.format)?3:4;
-     if(candidateFrames>=required&&found.code!==lastSentCode&&!sending){
-      send(found.code);
-     }
-    }else{
-     candidateCode='';
-     candidateFormat='';
-     candidateFrames=0;
-    }
+    if(found)acceptCandidate(found.code,found.format);
+    else{candidateCode='';candidateFormat='';candidateFrames=0}
    }
    if(stream)raf=requestAnimationFrame(scan);
   }
   raf=requestAnimationFrame(scan);
  }catch(e){
   const name=e&&e.name||'';
-  if(name==='NotAllowedError'||name==='PermissionDeniedError'){
-   message('Camera permission was denied by the browser. Check site permissions and reload.');
-  }else if(name==='NotFoundError'){
-   message('No camera was found on this device.');
-  }else{
-   message('Could not start camera: '+((e&&e.message)||name||'unknown error'));
-  }
+  if(name==='NotAllowedError'||name==='PermissionDeniedError')message('Camera permission was denied by the browser. Check site permissions and reload.');
+  else if(name==='NotFoundError')message('No camera was found on this device.');
+  else message('Could not start camera: '+((e&&e.message)||name||'unknown error'));
  }
 }
 
 document.getElementById('start').addEventListener('click',start);
-document.getElementById('stop').addEventListener('click',()=>{
- stop();
- message('Camera stopped.');
-});
+document.getElementById('stop').addEventListener('click',()=>{stop();message('Camera stopped.')});
 document.getElementById('send').addEventListener('click',async()=>{
  const field=document.getElementById('manual');
  if(await send(field.value))field.value='';
 });
 document.getElementById('manual').addEventListener('keydown',async e=>{
- if(e.key==='Enter'){
-  e.preventDefault();
-  if(await send(e.target.value))e.target.value='';
- }
+ if(e.key==='Enter'){e.preventDefault();if(await send(e.target.value))e.target.value=''}
 });
 if(validEndpoint&&validToken)start();
 else message('Invalid pairing link. Start Phone Scan again from Majorelle on your PC.');
