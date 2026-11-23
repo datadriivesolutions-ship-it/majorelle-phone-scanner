@@ -34,61 +34,35 @@ video{width:100%;height:100%;object-fit:cover;display:block}.frame{position:abso
 <script src="https://unpkg.com/@zxing/browser@latest"></script>
 <script>
 (()=>{'use strict';
-const params=new URLSearchParams(location.search),endpoint=params.get('endpoint')||'',token=params.get('token')||'',embeddedMode=params.get('embedded')==='1';
+const params=new URLSearchParams(location.search),endpoint=params.get('endpoint')||'',token=params.get('token')||'';
 const video=document.getElementById('video'),status=document.getElementById('status'),cameraLabel=document.getElementById('cameraLabel');
 let controls=null,active=false,sending=false,waiting=false,lastCode='',candidate='',candidateCount=0,clearCount=0,receiptTimer=null,confirmTimer=null;
 const validEndpoint=/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(endpoint),validToken=/^[a-f0-9]{64}$/i.test(token);
-function say(message,type='info'){status.className='status'+(type==='ok'?' ok':type==='bad'?' bad':'');status.innerHTML='<span class="status-icon">'+(type==='ok'?'✓':type==='bad'?'!':'◉')+'</span><span></span>';status.querySelector('span:last-child').textContent=message;cameraLabel.textContent=message;if(embeddedMode){try{parent.postMessage({type:'MAJORELLE_SCANNER_STATUS',message},'*')}catch(e){}}}
+function say(message,type='info'){status.className='status'+(type==='ok'?' ok':type==='bad'?' bad':'');status.innerHTML='<span class="status-icon">'+(type==='ok'?'✓':type==='bad'?'!':'◉')+'</span><span></span>';status.querySelector('span:last-child').textContent=message;cameraLabel.textContent=message}
 function stop(){active=false;if(controls){try{controls.stop()}catch(e){}controls=null}if(receiptTimer)clearTimeout(receiptTimer);receiptTimer=null;if(confirmTimer)clearTimeout(confirmTimer);confirmTimer=null;try{video.pause();video.srcObject=null}catch(e){}}
 function jsonp(action,extra={}){return new Promise((resolve,reject)=>{const cb='mjcb_'+Date.now()+'_'+Math.floor(Math.random()*1e6),script=document.createElement('script');const q=new URLSearchParams({phoneApi:action,token,callback:cb,...extra});const timer=setTimeout(()=>finish(new Error('Délai de réponse dépassé.')),12000);function finish(err,data){clearTimeout(timer);try{delete window[cb]}catch(e){window[cb]=undefined}script.remove();err?reject(err):resolve(data)}window[cb]=data=>finish(null,data);script.onerror=()=>finish(new Error('Impossible de contacter Majorelle.'));script.src=endpoint+'?'+q.toString();document.head.appendChild(script)})}
 function pollReceipt(){if(!active&&!waiting)return;jsonp('poll').then(r=>{if(r&&r.receipt){const x=r.receipt;waiting=false;if(confirmTimer)clearTimeout(confirmTimer);confirmTimer=null;document.getElementById('last').classList.add('show');document.getElementById('lastTitle').textContent=x.added?'✓ Produit ajouté':'⚠ Produit introuvable';document.getElementById('lastText').textContent='Code : '+x.code;if(x.added){say('Produit ajouté à votre document. Scannez le suivant.','ok');try{navigator.vibrate&&navigator.vibrate([45,35,45])}catch(e){}}else{say('Ce code ne correspond à aucun produit. Vous pouvez continuer.','bad')}} }).catch(()=>{}).finally(()=>{if(active||waiting)receiptTimer=setTimeout(pollReceipt,1000)})}
-async function send(code){
-code=String(code||'').trim();
-if(!code||sending||waiting||code===lastCode)return;
-if(!embeddedMode&&(!validEndpoint||!validToken)){
-say('Lien de session invalide. Fermez puis relancez le scanner depuis Majorelle.','bad');return;
-}
-sending=true;waiting=true;clearCount=0;
-say('Code '+code+' détecté. Ajout au document…');
-if(embeddedMode){
- const onAck=event=>{
-  if(event.source!==parent)return;
-  const msg=event.data||{};
-  if(msg.type!=='MAJORELLE_BARCODE_ACK'||String(msg.code||'')!==code)return;
-  window.removeEventListener('message',onAck);
-  waiting=false;sending=false;lastCode=code;candidate='';candidateCount=0;
-  document.getElementById('last').classList.add('show');
-  document.getElementById('lastTitle').textContent=msg.added?'✓ Produit ajouté':'⚠ Produit introuvable';
-  document.getElementById('lastText').textContent='Code : '+code;
-  say(msg.added?'Produit ajouté à la facture. Scannez le suivant.':'Produit introuvable. Vous pouvez continuer.',msg.added?'ok':'bad');
-  if(msg.added){try{navigator.vibrate&&navigator.vibrate([45,35,45])}catch(e){}}
- };
- window.addEventListener('message',onAck);
- parent.postMessage({type:'MAJORELLE_BARCODE',code},'*');
- setTimeout(()=>{if(waiting){window.removeEventListener('message',onAck);waiting=false;sending=false;say('Pas de confirmation reçue de Majorelle. Réessayez.','bad')}},15000);
- return;
-}
-try{
- const r=await jsonp('submit',{code});
- if(r&&r.error)throw new Error(r.error);
- lastCode=code;candidate='';candidateCount=0;
- if(!receiptTimer)pollReceipt();
- confirmTimer=setTimeout(()=>{if(waiting){waiting=false;say('Aucune confirmation reçue. Vérifiez le document puis continuez.','bad')}},20000);
-}catch(e){waiting=false;say((e&&e.message)||'Erreur lors de l’envoi. Réessayez.','bad')}
-finally{sending=false}
-}
+async function send(code){code=String(code||'').trim();if(!code||sending||waiting||code===lastCode)return;if(!validEndpoint||!validToken){say('Lien de session invalide. Fermez le scanner et relancez-le depuis Majorelle.','bad');return}sending=true;waiting=true;clearCount=0;say('Code '+code+' détecté. Ajout au document…');try{const r=await jsonp('submit',{code});if(r&&r.error)throw new Error(r.error);lastCode=code;candidate='';candidateCount=0;if(!receiptTimer)pollReceipt();confirmTimer=setTimeout(()=>{if(waiting){waiting=false;say('Aucune confirmation reçue. Vérifiez le document puis continuez.','bad')}},20000)}catch(e){waiting=false;say((e&&e.message)||'Erreur lors de l’envoi. Réessayez.','bad')}finally{sending=false}}
 function validGtin(code,fmt){if(fmt==='ean_13'&&/^\d{13}$/.test(code)){let d=[...code].map(Number),s=0;for(let i=0;i<12;i++)s+=d[i]*(i%2?3:1);return(10-s%10)%10===d[12]}if(fmt==='ean_8'&&/^\d{8}$/.test(code)){let d=[...code].map(Number),s=0;for(let i=0;i<7;i++)s+=d[i]*(i%2?1:3);return(10-s%10)%10===d[7]}if(fmt==='upc_a'&&/^\d{12}$/.test(code)){let d=[...code].map(Number),s=0;for(let i=0;i<11;i++)s+=d[i]*(i%2?1:3);return(10-s%10)%10===d[11]}return true}
 function fmtName(result){try{let f=result.getBarcodeFormat(),B=window.ZXingBrowser.BarcodeFormat;return String(B&&B[f]||f).toLowerCase()}catch(e){return''}}
 function accept(code,fmt){code=String(code||'').trim();fmt=String(fmt||'').toLowerCase();if(!code||waiting)return;if(['ean_13','ean_8','upc_a'].includes(fmt)&&!validGtin(code,fmt)){candidate='';candidateCount=0;return}if(!['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf'].includes(fmt))return;if(code===lastCode)return;if(code===candidate)candidateCount++;else{candidate=code;candidateCount=1}if(candidateCount>=3)send(code)}
-async function start(){stop();waiting=false;sending=false;lastCode='';candidate='';candidateCount=0;clearCount=0;if(!embeddedMode&&(!validEndpoint||!validToken)){say('Session invalide ou expirée. Fermez puis relancez le scanner depuis Majorelle.','bad');return}if(!window.ZXingBrowser||!ZXingBrowser.BrowserMultiFormatReader){say('Le moteur de lecture ne s’est pas chargé. Vérifiez votre connexion puis réessayez.','bad');return}if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){say('Caméra indisponible dans ce navigateur. Ouvrez Majorelle avec Chrome ou Safari à jour.','bad');return}try{say('Demande d’accès à la caméra…');const Z=ZXingBrowser,hints=new Map();if(Z.DecodeHintType&&Z.BarcodeFormat){hints.set(Z.DecodeHintType.POSSIBLE_FORMATS,[Z.BarcodeFormat.EAN_13,Z.BarcodeFormat.EAN_8,Z.BarcodeFormat.UPC_A,Z.BarcodeFormat.UPC_E,Z.BarcodeFormat.CODE_128,Z.BarcodeFormat.CODE_39,Z.BarcodeFormat.ITF].filter(x=>x!==undefined));if(Z.DecodeHintType.TRY_HARDER)hints.set(Z.DecodeHintType.TRY_HARDER,true)}const reader=new Z.BrowserMultiFormatReader(hints);await reader.decodeFromVideoDevice(undefined,video,(result,error,c)=>{if(c)controls=c;if(result){const code=result.getText(),fmt=fmtName(result);if(fmt)accept(code,fmt);else if(/^\d{13}$/.test(code)&&validGtin(code,'ean_13'))accept(code,'ean_13');else if(/^\d{8}$/.test(code)&&validGtin(code,'ean_8'))accept(code,'ean_8');else if(/^\d{12}$/.test(code)&&validGtin(code,'upc_a'))accept(code,'upc_a')}else if(error&&(/NotFoundException/.test(error.name||'')||/not found/i.test(error.message||''))){clearCount++;if(clearCount>=8){lastCode='';candidate='';candidateCount=0}}});active=true;say('Caméra active. Placez un code-barres dans le cadre.','ok');if(!embeddedMode)pollReceipt();else parent.postMessage({type:'MAJORELLE_SCANNER_READY'},'*')}catch(e){const n=e&&e.name||'';if(n==='NotAllowedError'||n==='PermissionDeniedError')say('Accès caméra refusé. Autorisez la caméra pour Majorelle dans les réglages du navigateur.','bad');else if(n==='NotFoundError')say('Aucune caméra détectée sur cet appareil.','bad');else say('Impossible d’activer la caméra : '+((e&&e.message)||n||'erreur inconnue'),'bad')}}
+async function start(){stop();waiting=false;sending=false;lastCode='';candidate='';candidateCount=0;clearCount=0;if(!validEndpoint||!validToken){say('Session invalide ou expirée. Fermez puis relancez le scanner depuis Majorelle.','bad');return}if(!window.ZXingBrowser||!ZXingBrowser.BrowserMultiFormatReader){say('Le moteur de lecture ne s’est pas chargé. Vérifiez votre connexion puis réessayez.','bad');return}if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){say('Caméra indisponible dans ce navigateur. Ouvrez Majorelle avec Chrome ou Safari à jour.','bad');return}try{say('Demande d’accès à la caméra…');const Z=ZXingBrowser,hints=new Map();if(Z.DecodeHintType&&Z.BarcodeFormat){hints.set(Z.DecodeHintType.POSSIBLE_FORMATS,[Z.BarcodeFormat.EAN_13,Z.BarcodeFormat.EAN_8,Z.BarcodeFormat.UPC_A,Z.BarcodeFormat.UPC_E,Z.BarcodeFormat.CODE_128,Z.BarcodeFormat.CODE_39,Z.BarcodeFormat.ITF].filter(x=>x!==undefined));if(Z.DecodeHintType.TRY_HARDER)hints.set(Z.DecodeHintType.TRY_HARDER,true)}const reader=new Z.BrowserMultiFormatReader(hints);await reader.decodeFromVideoDevice(undefined,video,(result,error,c)=>{if(c)controls=c;if(result){const code=result.getText(),fmt=fmtName(result);if(fmt)accept(code,fmt);else if(/^\d{13}$/.test(code)&&validGtin(code,'ean_13'))accept(code,'ean_13');else if(/^\d{8}$/.test(code)&&validGtin(code,'ean_8'))accept(code,'ean_8');else if(/^\d{12}$/.test(code)&&validGtin(code,'upc_a'))accept(code,'upc_a')}else if(error&&(/NotFoundException/.test(error.name||'')||/not found/i.test(error.message||''))){clearCount++;if(clearCount>=8){lastCode='';candidate='';candidateCount=0}}});active=true;say('Caméra active. Placez un code-barres dans le cadre.','ok');pollReceipt()}catch(e){const n=e&&e.name||'';if(n==='NotAllowedError'||n==='PermissionDeniedError')say('Accès caméra refusé. Autorisez la caméra pour datadriivesolutions-ship-it.github.io dans les réglages du navigateur.','bad');else if(n==='NotFoundError')say('Aucune caméra détectée sur cet appareil.','bad');else say('Impossible d’activer la caméra : '+((e&&e.message)||n||'erreur inconnue'),'bad')}}
 document.getElementById('retry').addEventListener('click',start);document.getElementById('close').addEventListener('click',()=>{
   stop();
-  say('Scanner terminé. Retour à Majorelle…','ok');
-  const returnUrl=params.get('returnUrl');
-  if(returnUrl){location.href=returnUrl;return;}
-  try{window.close()}catch(e){}
-});document.getElementById('sendManual').addEventListener('click',()=>send(document.getElementById('manual').value));document.getElementById('manual').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();send(e.target.value)}});window.addEventListener('pagehide',stop);document.addEventListener('visibilitychange',()=>{if(document.hidden)stop()});if(embeddedMode){say('Appuyez sur Activer / Réessayer pour démarrer la caméra.');parent.postMessage({type:'MAJORELLE_SCANNER_READY'},'*');}else{start();}
+  say('Scanner terminé. Votre document Majorelle est toujours ouvert.','ok');
+  try{
+    if(window.opener&&!window.opener.closed){
+      window.opener.postMessage({type:'MAJORELLE_SCANNER_CLOSED'},'https://script.google.com');
+    }
+  }catch(e){}
+  // Close this scanner tab only. Never navigate/reload the original Majorelle document.
+  setTimeout(()=>{
+    try{window.close()}catch(e){}
+    if(!window.closed){
+      cameraLabel.textContent='Vous pouvez fermer cet onglet et revenir à Majorelle.';
+    }
+  },150);
+});document.getElementById('sendManual').addEventListener('click',()=>send(document.getElementById('manual').value));document.getElementById('manual').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();send(e.target.value)}});window.addEventListener('pagehide',stop);document.addEventListener('visibilitychange',()=>{if(document.hidden)stop()});start();
 })();
 </script>
-</body>
-</html>
+</body></html>
