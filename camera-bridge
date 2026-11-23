@@ -1,0 +1,280 @@
+
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Majorelle · Camera Bridge</title>
+
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#eef1f6;color:#172033;font:15px system-ui,Arial,sans-serif}
+.shell{max-width:680px;margin:18px auto;padding:18px;background:#fff;border-radius:20px;box-shadow:0 12px 40px #17203322}
+.head{display:flex;gap:12px;align-items:center;margin-bottom:16px}
+.logo{width:42px;height:42px;border-radius:13px;background:#f0e8ff;color:#783bd2;display:grid;place-items:center;font-size:22px}
+h1{font-size:20px;margin:0 0 4px}
+.sub,.note{font-size:13px;color:#64748b}
+.view{position:relative;min-height:300px;background:#0c1b3a;border-radius:16px;overflow:hidden;display:grid;place-items:center}
+video{width:100%;max-height:520px;object-fit:cover;display:block}
+.frame{position:absolute;inset:20% 12%;border:3px solid #38bdf8;border-radius:16px;pointer-events:none}
+.laser{position:absolute;left:18%;right:18%;top:50%;height:2px;background:#ef4444;box-shadow:0 0 12px #ef4444;pointer-events:none}
+.status{position:absolute;bottom:12px;left:12px;right:12px;padding:10px 12px;border-radius:12px;background:#07152ddd;color:#fff;text-align:center;font-size:13px}
+.actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin:14px 0}
+button{border:0;border-radius:11px;padding:12px 18px;background:#7c3ed6;color:white;font-weight:650;cursor:pointer}
+button.secondary{background:#eef2f7;color:#334155}
+.note{text-align:center;line-height:1.55}
+@media(max-width:600px){
+.shell{margin:0;min-height:100vh;border-radius:0;padding:14px}
+.view{min-height:280px}
+}
+</style>
+</head>
+
+<body>
+<main class="shell">
+  <div class="head">
+    <div class="logo">▦</div>
+    <div>
+      <h1>Majorelle · Scanner</h1>
+      <div class="sub">Caméra en direct · Les codes sont envoyés à la facture ouverte</div>
+    </div>
+  </div>
+
+  <div class="view">
+    <video id="video" autoplay muted playsinline></video>
+    <div class="frame"></div>
+    <div class="laser"></div>
+    <div class="status" id="status">Initialisation de la caméra…</div>
+  </div>
+
+  <div class="actions">
+    <button id="start">Activer / Réessayer</button>
+    <button class="secondary" id="close">Fermer</button>
+  </div>
+
+  <p class="note">
+    Gardez cette fenêtre ouverte pendant le scan.
+    Chaque produit reconnu sera ajouté dans la facture Majorelle.
+    Éغلق هذه النافذة للعودة.
+  </p>
+</main>
+
+<script>
+(()=>{
+ const params=new URLSearchParams(location.search);
+ const nonce=params.get('nonce')||'';
+
+ let stream=null;
+ let detector=null;
+ let raf=0;
+ let busy=false;
+ let lastCode='';
+ let lastAt=0;
+ let closed=false;
+ let zxingReader=null;
+
+ const video=document.getElementById('video');
+ const status=document.getElementById('status');
+
+ const send=(type,extra={})=>{
+   try{
+     if(window.opener&&!window.opener.closed){
+       window.opener.postMessage({
+         source:'MAJORELLE_CAMERA_BRIDGE',
+         nonce,
+         type,
+         ...extra
+       },'*');
+     }
+   }catch(e){}
+ };
+
+ function stop(){
+   if(raf)cancelAnimationFrame(raf);
+   raf=0;
+
+   if(stream){
+     stream.getTracks().forEach(t=>t.stop());
+     stream=null;
+   }
+
+   try{
+     video.pause();
+     video.srcObject=null;
+   }catch(e){}
+ }
+
+ async function start(){
+   stop();
+   closed=false;
+   lastCode='';
+   status.textContent='طلب إذن الكاميرا…';
+
+   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+     status.textContent='المتصفح لا يتيح getUserMedia في هذه الصفحة.';
+     send('error',{message:status.textContent});
+     return;
+   }
+
+   try{
+     stream=await navigator.mediaDevices.getUserMedia({
+       audio:false,
+       video:{
+         facingMode:{ideal:'environment'},
+         width:{ideal:1280},
+         height:{ideal:720}
+       }
+     });
+
+     video.srcObject=stream;
+     await video.play();
+
+     status.textContent='الكاميرا تعمل. وجّهها نحو الباركود.';
+     send('ready');
+     send('status',{message:'الكاميرا تعمل. وجّهها نحو الباركود.'});
+
+     if('BarcodeDetector'in window){
+       let fmts=[
+         'ean_13','ean_8','upc_a','upc_e',
+         'code_128','code_39','itf','qr_code'
+       ];
+
+       try{
+         let supported=await BarcodeDetector.getSupportedFormats();
+         fmts=fmts.filter(x=>supported.includes(x));
+       }catch(e){}
+
+       if(fmts.length){
+         detector=new BarcodeDetector({formats:fmts});
+       }
+     }
+
+     if(!detector){
+       status.textContent='الكاميرا تعمل؛ جارٍ تحميل قارئ الباركود الاحتياطي…';
+       await loadZXing();
+     }
+
+     const tick=async()=>{
+       if(!stream||closed)return;
+
+       if(!busy&&video.readyState>=2){
+         busy=true;
+
+         try{
+           let code='';
+
+           if(detector){
+             const hits=await detector.detect(video);
+             if(hits&&hits.length){
+               code=hits[0].rawValue||'';
+             }
+           }else if(zxingReader){
+             const canvas=document.createElement('canvas');
+             canvas.width=video.videoWidth;
+             canvas.height=video.videoHeight;
+             canvas.getContext('2d').drawImage(video,0,0);
+
+             try{
+               const r=await zxingReader.decodeFromCanvas(canvas);
+               if(r)code=r.getText();
+             }catch(e){}
+           }
+
+           if(code){
+             const now=Date.now();
+
+             if(code!==lastCode||now-lastAt>2200){
+               lastCode=code;
+               lastAt=now;
+
+               status.textContent='تم التعرف على: '+code+' · إرسال إلى الفاتورة…';
+               send('scan',{code});
+             }
+           }
+         }catch(e){}
+         finally{
+           busy=false;
+         }
+       }
+
+       if(stream&&!closed){
+         raf=requestAnimationFrame(tick);
+       }
+     };
+
+     raf=requestAnimationFrame(tick);
+
+   }catch(e){
+     const n=e&&e.name||'Error';
+
+     const msg=
+       n==='NotAllowedError'
+       ?'تم رفض إذن الكاميرا لهذه النافذة. اسمح للكاميرا من إعدادات الموقع.'
+       :n==='NotFoundError'
+       ?'لم يتم العثور على كاميرا.'
+       :n==='NotReadableError'
+       ?'الكاميرا مستخدمة من تطبيق آخر.'
+       :n+' — '+(e.message||'تعذر تشغيل الكاميرا');
+
+     status.textContent=msg;
+     send('error',{message:msg,error:n});
+   }
+ }
+
+ async function loadZXing(){
+   try{
+     await new Promise((resolve,reject)=>{
+       const s=document.createElement('script');
+       s.src='https://unpkg.com/@zxing/browser@0.1.5/umd/index.min.js';
+       s.onload=resolve;
+       s.onerror=reject;
+       document.head.appendChild(s);
+     });
+
+     if(window.ZXingBrowser){
+       zxingReader=new ZXingBrowser.BrowserMultiFormatReader();
+     }
+   }catch(e){
+     status.textContent='الكاميرا تعمل، لكن قارئ الباركود غير متاح. حدّث Chrome أو جرّب BarcodeDetector.';
+   }
+ }
+
+ document.getElementById('start').addEventListener('click',start);
+
+ document.getElementById('close').addEventListener('click',()=>{
+   closed=true;
+   stop();
+   send('closed');
+   window.close();
+ });
+
+ window.addEventListener('beforeunload',()=>{
+   closed=true;
+   stop();
+   send('closed');
+ });
+
+ window.addEventListener('message',e=>{
+   const d=e.data||{};
+
+   if(
+     d.source==='MAJORELLE_CAMERA_PARENT'&&
+     d.nonce===nonce&&
+     d.type==='ack'
+   ){
+     status.textContent=d.added
+       ?'✓ تمت إضافة '+d.code+' إلى الفاتورة. امسح المنتج التالي.'
+       :'الكود '+d.code+' غير موجود في قائمة المنتجات.';
+   }
+ });
+
+ if(!nonce){
+   status.textContent='رابط الجلسة غير صالح. أعد فتح Scanner من Majorelle.';
+ }else{
+   send('ready');
+   start();
+ }
+})();
+</script>
+</body>
+</html>
