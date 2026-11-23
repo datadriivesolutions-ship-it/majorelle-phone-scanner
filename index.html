@@ -47,7 +47,7 @@ video{width:100%;height:100%;object-fit:cover;display:block}
 <div class="logo">▦</div>
 <div>
 <h1>Scanner Majorelle</h1>
-<div class="sub">Scannez vos produits directement dans votre document</div>
+<div class="sub">Scannez vos produits directement dans Majorelle</div>
 </div>
 </header>
 
@@ -72,7 +72,7 @@ video{width:100%;height:100%;object-fit:cover;display:block}
 <section class="panel">
 <div class="actions">
 <button class="btn" id="retry">Activer / Réessayer</button>
-<button class="btn light" id="close">Arrêter le scanner</button>
+<button class="btn light" id="close">Terminer et revenir</button>
 </div>
 <div class="manual">
 <input id="manual" inputmode="numeric" autocomplete="off" placeholder="Saisir un code-barres">
@@ -171,7 +171,7 @@ say('Ce code ne correspond à aucun produit. Vous pouvez continuer.','bad');
 }
 }
 }).catch(()=>{}).finally(()=>{
-if(active||waiting)receiptTimer=setTimeout(pollReceipt,650);
+if(active||waiting)receiptTimer=setTimeout(pollReceipt,1000);
 });
 }
 
@@ -354,7 +354,10 @@ document.getElementById('retry').addEventListener('click',start);
 
 document.getElementById('close').addEventListener('click',()=>{
 stop();
-say('Scanner arrêté. Fermez cette fenêtre Majorelle pour revenir au document.');
+say('Scanner terminé. Retour à Majorelle…','ok');
+const returnUrl=params.get('returnUrl');
+if(returnUrl){location.href=returnUrl;return;}
+try{window.close()}catch(e){}
 });
 
 document.getElementById('sendManual').addEventListener('click',()=>{
