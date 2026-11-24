@@ -5,11 +5,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Majorelle · Camera Bridge</title>
-
 <style>
 *{box-sizing:border-box}
 body{margin:0;background:#eef1f6;color:#172033;font:15px system-ui,Arial,sans-serif}
-.shell{max-width:680px;margin:18px auto;padding:18px;background:#fff;border-radius:20px;box-shadow:0 12px 40px #17203322}
+.shell{max-width:620px;margin:16px auto;padding:18px;background:#fff;border-radius:20px;box-shadow:0 12px 40px #17203322}
 .head{display:flex;gap:12px;align-items:center;margin-bottom:16px}
 .logo{width:42px;height:42px;border-radius:13px;background:#f0e8ff;color:#783bd2;display:grid;place-items:center;font-size:22px}
 h1{font-size:20px;margin:0 0 4px}
@@ -29,40 +28,36 @@ button.secondary{background:#eef2f7;color:#334155}
 }
 </style>
 </head>
-
 <body>
 <main class="shell">
-  <div class="head">
-    <div class="logo">▦</div>
-    <div>
-      <h1>Majorelle · Scanner</h1>
-      <div class="sub">Caméra en direct · Les codes sont envoyés à la facture ouverte</div>
-    </div>
+ <div class="head">
+  <div class="logo">▦</div>
+  <div>
+   <h1>Majorelle · Scanner</h1>
+   <div class="sub">Caméra en direct · Les produits sont ajoutés à la facture ouverte</div>
   </div>
+ </div>
 
-  <div class="view">
-    <video id="video" autoplay muted playsinline></video>
-    <div class="frame"></div>
-    <div class="laser"></div>
-    <div class="status" id="status">Initialisation de la caméra…</div>
-  </div>
+ <div class="view">
+  <video id="video" autoplay muted playsinline></video>
+  <div class="frame"></div>
+  <div class="laser"></div>
+  <div class="status" id="status">Connexion à Majorelle…</div>
+ </div>
 
-  <div class="actions">
-    <button id="start">Activer / Réessayer</button>
-    <button class="secondary" id="close">Fermer</button>
-  </div>
+ <div class="actions">
+  <button id="start">Activer / Réessayer</button>
+  <button class="secondary" id="close">Fermer</button>
+ </div>
 
-  <p class="note">
-    Gardez cette fenêtre ouverte pendant le scan.
-    Chaque produit reconnu sera ajouté dans la facture Majorelle.
-    Éغلق هذه النافذة للعودة.
-  </p>
+ <p class="note">Gardez cette fenêtre ouverte pendant le scan. Chaque produit reconnu sera ajouté à la facture Majorelle, sans fermer cette fenêtre.</p>
 </main>
 
 <script>
 (()=>{
  const params=new URLSearchParams(location.search);
  const nonce=params.get('nonce')||'';
+ const PARENT_ORIGIN='https://script.google.com';
 
  let stream=null;
  let detector=null;
@@ -72,207 +67,220 @@ button.secondary{background:#eef2f7;color:#334155}
  let lastAt=0;
  let closed=false;
  let zxingReader=null;
+ let waitingAck=false;
 
  const video=document.getElementById('video');
  const status=document.getElementById('status');
 
  const send=(type,extra={})=>{
-   try{
-     if(window.opener&&!window.opener.closed){
-       window.opener.postMessage({
-         source:'MAJORELLE_CAMERA_BRIDGE',
-         nonce,
-         type,
-         ...extra
-       },'*');
-     }
-   }catch(e){}
+  try{
+   if(window.opener&&!window.opener.closed){
+    window.opener.postMessage({
+     source:'MAJORELLE_CAMERA_BRIDGE',
+     nonce,
+     type,
+     ...extra
+    },PARENT_ORIGIN);
+   }
+  }catch(e){}
  };
 
  function stop(){
-   if(raf)cancelAnimationFrame(raf);
-   raf=0;
+  if(raf)cancelAnimationFrame(raf);
+  raf=0;
 
-   if(stream){
-     stream.getTracks().forEach(t=>t.stop());
-     stream=null;
-   }
+  if(stream){
+   stream.getTracks().forEach(t=>t.stop());
+   stream=null;
+  }
 
-   try{
-     video.pause();
-     video.srcObject=null;
-   }catch(e){}
- }
-
- async function start(){
-   stop();
-   closed=false;
-   lastCode='';
-   status.textContent='طلب إذن الكاميرا…';
-
-   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
-     status.textContent='المتصفح لا يتيح getUserMedia في هذه الصفحة.';
-     send('error',{message:status.textContent});
-     return;
-   }
-
-   try{
-     stream=await navigator.mediaDevices.getUserMedia({
-       audio:false,
-       video:{
-         facingMode:{ideal:'environment'},
-         width:{ideal:1280},
-         height:{ideal:720}
-       }
-     });
-
-     video.srcObject=stream;
-     await video.play();
-
-     status.textContent='الكاميرا تعمل. وجّهها نحو الباركود.';
-     send('ready');
-     send('status',{message:'الكاميرا تعمل. وجّهها نحو الباركود.'});
-
-     if('BarcodeDetector'in window){
-       let fmts=[
-         'ean_13','ean_8','upc_a','upc_e',
-         'code_128','code_39','itf','qr_code'
-       ];
-
-       try{
-         let supported=await BarcodeDetector.getSupportedFormats();
-         fmts=fmts.filter(x=>supported.includes(x));
-       }catch(e){}
-
-       if(fmts.length){
-         detector=new BarcodeDetector({formats:fmts});
-       }
-     }
-
-     if(!detector){
-       status.textContent='الكاميرا تعمل؛ جارٍ تحميل قارئ الباركود الاحتياطي…';
-       await loadZXing();
-     }
-
-     const tick=async()=>{
-       if(!stream||closed)return;
-
-       if(!busy&&video.readyState>=2){
-         busy=true;
-
-         try{
-           let code='';
-
-           if(detector){
-             const hits=await detector.detect(video);
-             if(hits&&hits.length){
-               code=hits[0].rawValue||'';
-             }
-           }else if(zxingReader){
-             const canvas=document.createElement('canvas');
-             canvas.width=video.videoWidth;
-             canvas.height=video.videoHeight;
-             canvas.getContext('2d').drawImage(video,0,0);
-
-             try{
-               const r=await zxingReader.decodeFromCanvas(canvas);
-               if(r)code=r.getText();
-             }catch(e){}
-           }
-
-           if(code){
-             const now=Date.now();
-
-             if(code!==lastCode||now-lastAt>2200){
-               lastCode=code;
-               lastAt=now;
-
-               status.textContent='تم التعرف على: '+code+' · إرسال إلى الفاتورة…';
-               send('scan',{code});
-             }
-           }
-         }catch(e){}
-         finally{
-           busy=false;
-         }
-       }
-
-       if(stream&&!closed){
-         raf=requestAnimationFrame(tick);
-       }
-     };
-
-     raf=requestAnimationFrame(tick);
-
-   }catch(e){
-     const n=e&&e.name||'Error';
-
-     const msg=
-       n==='NotAllowedError'
-       ?'تم رفض إذن الكاميرا لهذه النافذة. اسمح للكاميرا من إعدادات الموقع.'
-       :n==='NotFoundError'
-       ?'لم يتم العثور على كاميرا.'
-       :n==='NotReadableError'
-       ?'الكاميرا مستخدمة من تطبيق آخر.'
-       :n+' — '+(e.message||'تعذر تشغيل الكاميرا');
-
-     status.textContent=msg;
-     send('error',{message:msg,error:n});
-   }
+  try{
+   video.pause();
+   video.srcObject=null;
+  }catch(e){}
  }
 
  async function loadZXing(){
-   try{
-     await new Promise((resolve,reject)=>{
-       const s=document.createElement('script');
-       s.src='https://unpkg.com/@zxing/browser@0.1.5/umd/index.min.js';
-       s.onload=resolve;
-       s.onerror=reject;
-       document.head.appendChild(s);
-     });
+  await new Promise((resolve,reject)=>{
+   const s=document.createElement('script');
+   s.src='https://unpkg.com/@zxing/browser@0.1.5/umd/index.min.js';
+   s.onload=resolve;
+   s.onerror=reject;
+   document.head.appendChild(s);
+  });
 
-     if(window.ZXingBrowser){
-       zxingReader=new ZXingBrowser.BrowserMultiFormatReader();
-     }
-   }catch(e){
-     status.textContent='الكاميرا تعمل، لكن قارئ الباركود غير متاح. حدّث Chrome أو جرّب BarcodeDetector.';
+  if(window.ZXingBrowser){
+   zxingReader=new ZXingBrowser.BrowserMultiFormatReader();
+  }
+ }
+
+ async function start(){
+  stop();
+  closed=false;
+  lastCode='';
+  waitingAck=false;
+
+  status.textContent='Demande d’autorisation caméra…';
+
+  if(!nonce){
+   status.textContent='Session invalide. Fermez et relancez Scanner depuis Majorelle.';
+   return;
+  }
+
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+   status.textContent='Ce navigateur ne permet pas l’accès caméra dans cette fenêtre.';
+   send('error',{message:status.textContent});
+   return;
+  }
+
+  try{
+   stream=await navigator.mediaDevices.getUserMedia({
+    audio:false,
+    video:{
+     facingMode:{ideal:'environment'},
+     width:{ideal:1280},
+     height:{ideal:720}
+    }
+   });
+
+   video.srcObject=stream;
+   await video.play();
+
+   status.textContent='Caméra active. Placez le code dans le cadre.';
+   send('status',{message:'Caméra active. Scannez les produits.'});
+
+   if('BarcodeDetector'in window){
+    let formats=[
+     'ean_13','ean_8','upc_a','upc_e',
+     'code_128','code_39','itf','qr_code'
+    ];
+
+    try{
+     const supported=await BarcodeDetector.getSupportedFormats();
+     formats=formats.filter(x=>supported.includes(x));
+    }catch(e){}
+
+    if(formats.length){
+     detector=new BarcodeDetector({formats});
+    }
    }
+
+   if(!detector){
+    try{
+     await loadZXing();
+    }catch(e){
+     status.textContent='Caméra active, mais lecteur de codes indisponible dans ce navigateur.';
+     send('error',{message:status.textContent});
+     return;
+    }
+   }
+
+   const tick=async()=>{
+    if(!stream||closed)return;
+
+    if(!busy&&!waitingAck&&video.readyState>=2){
+     busy=true;
+
+     try{
+      let code='';
+
+      if(detector){
+       const hits=await detector.detect(video);
+       if(hits&&hits.length){
+        code=hits[0].rawValue||'';
+       }
+      }else if(zxingReader){
+       const canvas=document.createElement('canvas');
+       canvas.width=video.videoWidth;
+       canvas.height=video.videoHeight;
+       canvas.getContext('2d').drawImage(video,0,0);
+
+       try{
+        const r=await zxingReader.decodeFromCanvas(canvas);
+        if(r)code=r.getText();
+       }catch(e){}
+      }
+
+      if(code){
+       const now=Date.now();
+
+       if(code!==lastCode||now-lastAt>1800){
+        lastCode=code;
+        lastAt=now;
+        waitingAck=true;
+
+        status.textContent='Code détecté : '+code+' · Ajout à la facture…';
+        send('scan',{code});
+       }
+      }
+     }catch(e){}
+     finally{
+      busy=false;
+     }
+    }
+
+    if(stream&&!closed){
+     raf=requestAnimationFrame(tick);
+    }
+   };
+
+   raf=requestAnimationFrame(tick);
+
+  }catch(e){
+   const n=e&&e.name||'Error';
+
+   const msg=
+    n==='NotAllowedError'
+    ?'Autorisation caméra refusée pour cette fenêtre. Autorisez la caméra dans Chrome.'
+    :n==='NotFoundError'
+    ?'Aucune caméra détectée.'
+    :n==='NotReadableError'
+    ?'La caméra est utilisée par une autre application.'
+    :n+' · '+(e.message||'Erreur caméra');
+
+   status.textContent=msg;
+   send('error',{message:msg,error:n});
+  }
  }
 
  document.getElementById('start').addEventListener('click',start);
 
  document.getElementById('close').addEventListener('click',()=>{
-   closed=true;
-   stop();
-   send('closed');
-   window.close();
+  closed=true;
+  stop();
+  send('closed');
+  window.close();
  });
 
  window.addEventListener('beforeunload',()=>{
-   closed=true;
-   stop();
-   send('closed');
+  closed=true;
+  stop();
+  send('closed');
  });
 
  window.addEventListener('message',e=>{
-   const d=e.data||{};
+  if(e.origin!==PARENT_ORIGIN||e.source!==window.opener)return;
 
-   if(
-     d.source==='MAJORELLE_CAMERA_PARENT'&&
-     d.nonce===nonce&&
-     d.type==='ack'
-   ){
-     status.textContent=d.added
-       ?'✓ تمت إضافة '+d.code+' إلى الفاتورة. امسح المنتج التالي.'
-       :'الكود '+d.code+' غير موجود في قائمة المنتجات.';
-   }
+  const d=e.data||{};
+
+  if(
+   d.source!=='MAJORELLE_CAMERA_PARENT'||
+   d.nonce!==nonce||
+   d.type!=='ack'
+  )return;
+
+  waitingAck=false;
+
+  status.textContent=d.added
+   ?'✓ '+d.code+' ajouté à la facture. Scannez le produit suivant.'
+   :'Code '+d.code+' introuvable dans les produits. Scannez le suivant ou vérifiez le code.';
  });
 
- if(!nonce){
-   status.textContent='رابط الجلسة غير صالح. أعد فتح Scanner من Majorelle.';
+ if(nonce){
+  send('ready');
+  start();
  }else{
-   send('ready');
-   start();
+  status.textContent='Session invalide. Ouvrez le scanner depuis Majorelle.';
  }
 })();
 </script>
